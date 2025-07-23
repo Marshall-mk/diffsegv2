@@ -434,7 +434,9 @@ def main():
                 # Save visualization
                 save_path = output_dir / f"sample_epoch_{epoch+1}.png"
                 visualize_segmentation(
-                    sample_image.cpu(), sample_mask, predicted_mask.cpu(),
+                    sample_image.cpu(), 
+                    predicted_mask=predicted_mask.cpu(),
+                    ground_truth_mask=sample_mask,
                     title=f"Epoch {epoch+1} Results ({model.diffusion_type.title()} Diffusion)", 
                     save_path=str(save_path)
                 )

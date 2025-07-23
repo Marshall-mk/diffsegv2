@@ -221,7 +221,7 @@ def predict_with_intermediate_steps(model: DiffusionSegmentation, image_path: st
 def batch_inference(model: DiffusionSegmentation, input_dir: str, output_dir: str,
                    device: torch.device, num_inference_steps: int = 50,
                    image_size: tuple = (256, 256), save_visualizations: bool = True,
-                   save_intermediate: bool = False):
+                   save_intermediate: bool = False, mask_threshold: float = 0.5):
     """Run inference on all images in a directory"""
     
     input_path = Path(input_dir)
@@ -276,10 +276,11 @@ def batch_inference(model: DiffusionSegmentation, input_dir: str, output_dir: st
                     model, str(image_file), device, num_inference_steps, image_size
                 )
             
-            # Save mask as image
+            # Save mask as image (properly binarized)
             mask_np = predicted_mask.squeeze().cpu().numpy()
-            mask_np = (mask_np * 255).astype(np.uint8)
-            mask_image = Image.fromarray(mask_np, mode='L')
+            # Apply threshold to make binary
+            mask_binary = (mask_np > mask_threshold).astype(np.uint8) * 255
+            mask_image = Image.fromarray(mask_binary, mode='L')
             
             output_file = output_path / f"{image_file.stem}_mask.png"
             mask_image.save(output_file)
@@ -289,8 +290,10 @@ def batch_inference(model: DiffusionSegmentation, input_dir: str, output_dir: st
                 image = preprocess_image(str(image_file), image_size)
                 vis_file = vis_dir / f"{image_file.stem}_visualization.png"
                 visualize_segmentation(
-                    image, predicted_mask.cpu(), None,
-                    title=f"Segmentation: {image_file.name}",
+                    image, 
+                    predicted_mask=predicted_mask.cpu(),
+                    ground_truth_mask=None,
+                    title=f"Predicted Segmentation: {image_file.name}",
                     save_path=str(vis_file)
                 )
             
@@ -322,7 +325,8 @@ def batch_inference(model: DiffusionSegmentation, input_dir: str, output_dir: st
 
 
 def interactive_inference(model: DiffusionSegmentation, device: torch.device,
-                         num_inference_steps: int = 50, image_size: tuple = (256, 256)):
+                         num_inference_steps: int = 50, image_size: tuple = (256, 256),
+                         mask_threshold: float = 0.5):
     """Interactive inference mode with enhanced features"""
     
     print("Interactive Inference Mode")
@@ -330,13 +334,15 @@ def interactive_inference(model: DiffusionSegmentation, device: torch.device,
     print("  <image_path> - Process an image")
     print("  'info' - Show model information") 
     print("  'steps <N>' - Set number of inference steps")
+    print("  'threshold <T>' - Set mask binarization threshold (0.0-1.0)")
     print("  'debug <image_path>' - Show intermediate steps (morphological only)")
     print("  'quit' - Exit")
     
     current_steps = num_inference_steps
+    current_threshold = mask_threshold
     
     while True:
-        command = input(f"\n[{current_steps} steps] > ").strip()
+        command = input(f"\n[{current_steps} steps, threshold {current_threshold:.2f}] > ").strip()
         
         if command.lower() in ['quit', 'exit', 'q']:
             break
@@ -358,6 +364,17 @@ def interactive_inference(model: DiffusionSegmentation, device: torch.device,
                 print(f"Set inference steps to {current_steps}")
             except (ValueError, IndexError):
                 print("Usage: steps <number>")
+            continue
+        
+        if command.startswith('threshold '):
+            try:
+                current_threshold = float(command.split()[1])
+                if 0.0 <= current_threshold <= 1.0:
+                    print(f"Set mask threshold to {current_threshold:.2f}")
+                else:
+                    print("Threshold must be between 0.0 and 1.0")
+            except (ValueError, IndexError):
+                print("Usage: threshold <0.0-1.0>")
             continue
         
         if command.startswith('debug '):
@@ -384,8 +401,10 @@ def interactive_inference(model: DiffusionSegmentation, device: torch.device,
                 # Show final result
                 image = preprocess_image(image_path, image_size)
                 visualize_segmentation(
-                    image, predicted_mask.cpu(), None,
-                    title=f"Final Result: {os.path.basename(image_path)}"
+                    image, 
+                    predicted_mask=predicted_mask.cpu(),
+                    ground_truth_mask=None,
+                    title=f"Final Predicted Segmentation: {os.path.basename(image_path)}"
                 )
                 
             except Exception as e:
@@ -410,8 +429,10 @@ def interactive_inference(model: DiffusionSegmentation, device: torch.device,
             
             # Show results
             visualize_segmentation(
-                image, predicted_mask.cpu(), None,
-                title=f"Segmentation: {os.path.basename(image_path)}"
+                image, 
+                predicted_mask=predicted_mask.cpu(),
+                ground_truth_mask=None,
+                title=f"Predicted Segmentation: {os.path.basename(image_path)}"
             )
             
             # Ask if user wants to save
@@ -422,8 +443,9 @@ def interactive_inference(model: DiffusionSegmentation, device: torch.device,
                     output_path = "mask.png"
                 
                 mask_np = predicted_mask.squeeze().cpu().numpy()
-                mask_np = (mask_np * 255).astype(np.uint8)
-                mask_image = Image.fromarray(mask_np, mode='L')
+                # Apply threshold to make binary
+                mask_binary = (mask_np > current_threshold).astype(np.uint8) * 255
+                mask_image = Image.fromarray(mask_binary, mode='L')
                 mask_image.save(output_path)
                 print(f"Saved to {output_path}")
         
@@ -479,6 +501,8 @@ def main():
     parser.add_argument('--save-intermediate', action='store_true',
                        help='Save intermediate steps (batch mode, morphological only)')
     parser.add_argument('--no-vis', action='store_true', help='Skip saving visualizations in batch mode')
+    parser.add_argument('--mask-threshold', type=float, default=0.5,
+                       help='Threshold for binarizing output masks (default: 0.5)')
     
     args = parser.parse_args()
     
@@ -512,7 +536,7 @@ def main():
     
     if args.interactive:
         # Interactive mode
-        interactive_inference(model, device, args.steps, image_size)
+        interactive_inference(model, device, args.steps, image_size, args.mask_threshold)
     
     elif args.batch:
         # Batch inference mode
@@ -522,7 +546,8 @@ def main():
         
         batch_inference(
             model, args.input, args.output, device, 
-            args.steps, image_size, not args.no_vis, args.save_intermediate
+            args.steps, image_size, not args.no_vis, args.save_intermediate,
+            args.mask_threshold
         )
     
     else:
@@ -555,8 +580,9 @@ def main():
         
         # Save mask
         mask_np = predicted_mask.squeeze().cpu().numpy()
-        mask_np = (mask_np * 255).astype(np.uint8)
-        mask_image = Image.fromarray(mask_np, mode='L')
+        # Apply threshold to make binary
+        mask_binary = (mask_np > args.mask_threshold).astype(np.uint8) * 255
+        mask_image = Image.fromarray(mask_binary, mode='L')
         
         input_name = Path(args.input).stem
         mask_file = output_path / f"{input_name}_mask.png"
@@ -566,8 +592,10 @@ def main():
         # Save visualization
         vis_file = output_path / f"{input_name}_visualization.png"
         visualize_segmentation(
-            image, predicted_mask.cpu(), None,
-            title=f"Segmentation: {Path(args.input).name}",
+            image, 
+            predicted_mask=predicted_mask.cpu(),
+            ground_truth_mask=None,
+            title=f"Predicted Segmentation: {Path(args.input).name}",
             save_path=str(vis_file)
         )
         plt.close()
