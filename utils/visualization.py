@@ -71,7 +71,7 @@ def visualize_segmentation(image: torch.Tensor,
     # Ground truth mask (if provided)
     if has_ground_truth:
         gt_mask_np = ground_truth_mask.squeeze().cpu().numpy()
-        axes[plot_idx].imshow(gt_mask_np, cmap='gray', vmin=0, vmax=1)
+        axes[plot_idx].imshow(gt_mask_np, cmap='gray')
         axes[plot_idx].set_title("Ground Truth Mask")
         axes[plot_idx].axis('off')
         plot_idx += 1
@@ -79,7 +79,7 @@ def visualize_segmentation(image: torch.Tensor,
     # Predicted mask (if provided)
     if has_predicted:
         pred_mask_np = predicted_mask.squeeze().cpu().numpy()
-        axes[plot_idx].imshow(pred_mask_np, cmap='gray', vmin=0, vmax=1)
+        axes[plot_idx].imshow(pred_mask_np, cmap='gray')
         axes[plot_idx].set_title("Predicted Mask")
         axes[plot_idx].axis('off')
         plot_idx += 1
