@@ -232,11 +232,11 @@ def visualize_training_flow(training_data: Dict, save_path: str = None,
     num_timesteps = len(timesteps)
     
     # Create a large figure with subplots
-    fig = plt.figure(figsize=(20, 12))
+    fig = plt.figure(figsize=(20, 10))
     
     # Original image and mask
-    original_image = training_data['original_image'][batch_idx]
-    original_mask = training_data['original_mask'][batch_idx, 0]
+    original_image = training_data['original_images'][batch_idx]
+    original_mask = training_data['original_masks'][batch_idx, 0]
     
     # Convert image to displayable format
     if original_image.shape[0] == 3:  # CHW format
@@ -248,12 +248,12 @@ def visualize_training_flow(training_data: Dict, save_path: str = None,
         image_display = image_display / 255.0
     
     # Top row: Original image and mask
-    ax1 = plt.subplot(4, max(num_timesteps, 4), 1)
+    ax1 = plt.subplot(3, max(num_timesteps, 4), 1)
     plt.imshow(image_display)
     plt.title('Original Image', fontsize=12, fontweight='bold')
     plt.axis('off')
     
-    ax2 = plt.subplot(4, max(num_timesteps, 4), 2)
+    ax2 = plt.subplot(3, max(num_timesteps, 4), 2)
     plt.imshow(original_mask.numpy(), cmap='gray', vmin=0, vmax=1)
     plt.title('Original Mask', fontsize=12, fontweight='bold')
     plt.axis('off')
@@ -263,7 +263,7 @@ def visualize_training_flow(training_data: Dict, save_path: str = None,
         if i >= max_timesteps:
             break
             
-        ax = plt.subplot(4, max(num_timesteps, 4), max(num_timesteps, 4) + 1 + i)
+        ax = plt.subplot(3, max(num_timesteps, 4), max(num_timesteps, 4) + 1 + i)
         degraded_mask = degraded_masks[batch_idx, 0].numpy()
         
         plt.imshow(degraded_mask, cmap='gray', vmin=0, vmax=1)
@@ -279,70 +279,28 @@ def visualize_training_flow(training_data: Dict, save_path: str = None,
             plt.title(f't={timestep}', fontsize=10)
         plt.axis('off')
     
-    # Third row: Model inputs (concatenated image + degraded mask)
-    for i, concat_data in enumerate(training_data['concatenated_inputs'][:max_timesteps]):
-        ax = plt.subplot(4, max(num_timesteps, 4), 2 * max(num_timesteps, 4) + 1 + i)
+    # Third row: Model input visualization (simulated concatenated input)
+    for i, (timestep, degraded_masks) in enumerate(zip(timesteps, training_data['degraded_masks'])):
+        if i >= max_timesteps:
+            break
+            
+        ax = plt.subplot(3, max(num_timesteps, 4), 2 * max(num_timesteps, 4) + 1 + i)
         
-        # Show the concatenated input as RGB where:
+        # Create RGB visualization where:
         # R = Image red channel, G = Image green channel, B = Degraded mask
-        model_input = concat_data['concatenated'][batch_idx]
+        degraded_mask = degraded_masks[batch_idx, 0].numpy()
         
-        if model_input.shape[0] >= 4:  # At least image (3 ch) + mask (1 ch)
-            # Create RGB visualization
-            rgb_viz = torch.zeros(3, model_input.shape[1], model_input.shape[2])
-            rgb_viz[0] = model_input[0]  # R from image
-            rgb_viz[1] = model_input[1]  # G from image  
-            rgb_viz[2] = model_input[3]  # Degraded mask as B channel
-            
-            # Normalize for display
-            rgb_viz = torch.clamp(rgb_viz, 0, 1)
-            rgb_display = rgb_viz.permute(1, 2, 0).numpy()
-            
-            plt.imshow(rgb_display)
-            plt.title(f'Model Input\n(R:img_r, G:img_g, B:mask)', fontsize=9)
-        else:
-            # Fallback: show just the mask channel
-            plt.imshow(model_input[-1].numpy(), cmap='gray')
-            plt.title(f'Model Input\n(mask only)', fontsize=9)
+        # Create RGB visualization
+        rgb_viz = np.zeros((original_image.shape[1], original_image.shape[2], 3))
+        rgb_viz[:, :, 0] = original_image[0].numpy()  # R from image
+        rgb_viz[:, :, 1] = original_image[1].numpy()  # G from image  
+        rgb_viz[:, :, 2] = degraded_mask  # Degraded mask as B channel
         
-        plt.axis('off')
-    
-    # Fourth row: Channel separation visualization
-    for i, concat_data in enumerate(training_data['concatenated_inputs'][:max_timesteps]):
-        ax = plt.subplot(4, max(num_timesteps, 4), 3 * max(num_timesteps, 4) + 1 + i)
+        # Normalize for display
+        rgb_viz = np.clip(rgb_viz, 0, 1)
         
-        # Show channels side by side in a mini subplot
-        model_input = concat_data['concatenated'][batch_idx]
-        
-        # Create a small visualization showing channel structure
-        if model_input.shape[0] >= 4:
-            # Show image channels and mask channel
-            fig_small = plt.figure(figsize=(2, 1))
-            
-            # Mini grid: [IMG_R | IMG_G | IMG_B | MASK]
-            for ch in range(min(4, model_input.shape[0])):
-                plt.subplot(1, 4, ch + 1)
-                plt.imshow(model_input[ch].numpy(), cmap='gray')
-                if ch < 3:
-                    plt.title(f'Ch{ch}', fontsize=6)
-                else:
-                    plt.title('Mask', fontsize=6)
-                plt.axis('off')
-            
-            plt.tight_layout()
-            plt.savefig(f'/tmp/channels_{i}.png', dpi=50, bbox_inches='tight')
-            plt.close(fig_small)
-            
-            # Load and show the mini figure
-            import matplotlib.image as mpimg
-            if os.path.exists(f'/tmp/channels_{i}.png'):
-                mini_img = mpimg.imread(f'/tmp/channels_{i}.png')
-                plt.imshow(mini_img)
-                plt.title(f'Channels t={concat_data["timestep"]}', fontsize=9)
-        else:
-            plt.imshow(model_input[0].numpy(), cmap='gray')
-            plt.title(f'Single Channel', fontsize=9)
-        
+        plt.imshow(rgb_viz)
+        plt.title(f'Model Input t={timestep}\n(R:img_r, G:img_g, B:mask)', fontsize=9)
         plt.axis('off')
     
     plt.suptitle('Training Data Flow Visualization', fontsize=16, fontweight='bold')

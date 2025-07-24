@@ -147,10 +147,10 @@ inference_results/
 outputs_gaussian/
 outputs_morphological/
 checkpoints/
-models/
 saved_models/
 experiments/
 runs/
+morph_demo_results/
 
 # Visualization outputs
 *.png

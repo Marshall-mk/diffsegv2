@@ -247,6 +247,7 @@ def main():
     parser.add_argument('--create-degradation-gif', action='store_true',
                        help='Create animated GIF showing morphological degradation process')
     
+    
     args = parser.parse_args()
     
     # Handle deprecated arguments
