@@ -99,41 +99,60 @@ def create_morphological_ops(morph_type: str,
 def run_forward_process(image: torch.Tensor, 
                        morph_ops: MorphologicalDegradation,
                        timesteps_to_plot: List[int],
-                       device: torch.device) -> Dict[int, torch.Tensor]:
+                       device: torch.device,
+                       use_training_mode: bool = True) -> Dict[int, torch.Tensor]:
     """Run forward morphological diffusion process"""
     
     image = image.to(device)
     results = {}
-    current_image = image.clone()
-    
-    # Store initial image
-    if 0 in timesteps_to_plot:
-        results[0] = current_image.clone()
     
     print(f"Running forward process for {len(timesteps_to_plot)} timesteps...")
+    print(f"Mode: {'Training-style (direct timestep)' if use_training_mode else 'Demo-style (cumulative)'}")
     
-    # Apply forward process step by step
-    max_timestep = max(timesteps_to_plot) if timesteps_to_plot else morph_ops.timesteps
-    
-    for t in range(1, max_timestep + 1):
-        # Get morphological parameters for this timestep
-        t_tensor = torch.tensor([t-1], device=device)  # 0-indexed for morphological ops
+    if use_training_mode:
+        # TRAINING MODE: Apply degradation directly for each timestep (matches training)
+        # This is what actually happens during training
+        for timestep in timesteps_to_plot:
+            if timestep == 0:
+                results[timestep] = image.clone()
+            else:
+                # Apply degradation directly for this timestep (like in training)
+                # This matches what forward_morphology_batch does
+                t_tensor = torch.full((1,), timestep, device=device, dtype=torch.long)
+                
+                # Get intensity from the schedule for this specific timestep
+                # This should match the schedule used in training
+                schedule = create_morphological_schedule(morph_ops.num_timesteps, "exponential")
+                
+                # FIX: Ensure timestep index is within bounds
+                schedule_index = min(timestep, len(schedule) - 1)
+                intensity = schedule[schedule_index].item()
+                
+                # Apply morphological degradation for this specific timestep
+                # Use the schedule_index for the morph_ops.forward call as well
+                degraded = morph_ops.forward(image.clone(), schedule_index, intensity)
+                results[timestep] = degraded
+    else:
+        # DEMO MODE: Apply degradation step-by-step (original demo behavior)
+        # This creates cumulative degradation which is why it's so severe
+        current_image = image.clone()
+        results[0] = current_image.clone()
         
-        # Apply one step of morphological degradation
-        try:
-            # Try the forward_step method first
-            current_image = morph_ops.forward_step(current_image, t_tensor)
-        except AttributeError:
-            # If forward_step doesn't exist, try alternative methods
-            try:
-                current_image = morph_ops.apply_degradation(current_image, t_tensor)
-            except AttributeError:
-                # If no specific method exists, try calling the object directly
-                current_image = morph_ops(current_image, t_tensor)
+        max_timestep = max(timesteps_to_plot) if timesteps_to_plot else morph_ops.num_timesteps
         
-        # Store result if this timestep should be plotted
-        if t in timesteps_to_plot:
-            results[t] = current_image.clone()
+        for t in range(1, max_timestep + 1):
+            # Get intensity from schedule
+            schedule = create_morphological_schedule(morph_ops.num_timesteps, "exponential")
+            
+            # FIX: Ensure schedule index is within bounds
+            schedule_index = min(t-1, len(schedule) - 1)
+            intensity = schedule[schedule_index].item()
+            
+            # Apply one step of degradation to the already degraded image
+            current_image = morph_ops.forward(current_image, schedule_index, intensity)
+            
+            if t in timesteps_to_plot:
+                results[t] = current_image.clone()
     
     return results
 
@@ -346,6 +365,12 @@ def main():
     parser.add_argument('--debug-mode', action='store_true',
                        help='Print detailed debug information')
     
+    # Add argument for degradation mode
+    parser.add_argument('--use-training-mode', action='store_true', default=True,
+                       help='Use training-style degradation (direct timestep) instead of cumulative (default: True)')
+    parser.add_argument('--use-demo-mode', action='store_true', 
+                       help='Use original demo-style cumulative degradation (overrides --use-training-mode)')
+    
     args = parser.parse_args()
     
     # Setup device
@@ -362,6 +387,8 @@ def main():
     
     # Validate timesteps
     timesteps_to_plot = [t for t in timesteps_to_plot if 0 <= t <= args.timesteps]
+    # FIX: Ensure timestep 1000 is mapped to index 999 for a 1000-timestep schedule
+    timesteps_to_plot = [min(t, args.timesteps - 1) if t == args.timesteps else t for t in timesteps_to_plot]
     timesteps_to_plot = sorted(list(set(timesteps_to_plot)))  # Remove duplicates and sort
     
     print(f"Morphological types to test: {morph_types}")
@@ -433,9 +460,13 @@ def main():
                                             f"Schedule: {args.schedule_type}, "
                                             f"Timesteps: {args.timesteps}")
             
+            # Determine which mode to use
+            use_training_mode = args.use_training_mode and not args.use_demo_mode
+            
             # Run forward process
             results = run_forward_process(
-                original_image, morph_ops, timesteps_to_plot, device
+                original_image, morph_ops, timesteps_to_plot, device,
+                use_training_mode=use_training_mode
             )
             
             results_dict[morph_type] = results

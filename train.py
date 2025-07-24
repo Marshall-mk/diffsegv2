@@ -19,17 +19,31 @@ import warnings
 from src.models import DiffusionSegmentation
 from src.models import MorphologicalLoss, MorphologicalDebugger
 from utils.data_utils import load_dataset, create_synthetic_data
-from utils.visualization import plot_training_curves, visualize_segmentation
+from utils.visualization import plot_training_curves, visualize_segmentation, visualize_training_flow, visualize_batch_training_info, create_training_flow_gif
 
 
 def train_step(model: DiffusionSegmentation, image: torch.Tensor, mask: torch.Tensor, 
                optimizer: torch.optim.Optimizer, device: torch.device, 
-               use_enhanced_loss: bool = True, loss_fn=None) -> float:
-    """Single training step with enhanced morphological loss support"""
+               use_enhanced_loss: bool = True, loss_fn=None, 
+               visualize_batch: bool = False, save_dir: str = None, 
+               batch_idx: int = 0, epoch: int = 0) -> tuple:
+    """Single training step with enhanced morphological loss support and optional visualization"""
     model.train()
     optimizer.zero_grad()
     
     image, mask = image.to(device), mask.to(device)
+    
+    # VISUALIZATION: Capture training data flow before forward pass
+    batch_info = None
+    if visualize_batch:
+        # Get detailed batch information including forward process
+        batch_info = model.get_batch_training_info(image, mask)
+        
+        if save_dir:
+            # Save batch visualization
+            batch_viz_path = f"{save_dir}/batch_info_epoch_{epoch}_batch_{batch_idx}.png"
+            visualize_batch_training_info(batch_info, batch_viz_path, max_samples=2)
+    
     predicted, target = model(image, mask)
     
     # Use the model's built-in compute_loss method for morphological diffusion
@@ -50,7 +64,7 @@ def train_step(model: DiffusionSegmentation, image: torch.Tensor, mask: torch.Te
     
     optimizer.step()
     
-    return loss.item()
+    return loss.item(), batch_info
 
 
 def validate(model: DiffusionSegmentation, val_loader: DataLoader, device: torch.device, 
@@ -225,6 +239,14 @@ def main():
     parser.add_argument('--debug-freq', type=int, default=20,
                        help='Run debugging checks every N epochs')
     
+    # Add visualization arguments
+    parser.add_argument('--visualize-training-flow', action='store_true',
+                       help='Enable training data flow visualization')
+    parser.add_argument('--viz-freq', type=int, default=50,
+                       help='Frequency of training flow visualization (every N batches)')
+    parser.add_argument('--create-degradation-gif', action='store_true',
+                       help='Create animated GIF showing morphological degradation process')
+    
     args = parser.parse_args()
     
     # Handle deprecated arguments
@@ -268,6 +290,13 @@ def main():
     # Initialize wandb
     if args.wandb:
         wandb.init(project="morphological-diffusion-segmentation", config=config)
+    
+    # Setup visualization directory
+    viz_dir = None
+    if args.visualize_training_flow:
+        viz_dir = output_dir / "training_visualizations"
+        viz_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Training visualizations will be saved to: {viz_dir}")
     
     # Create model with updated parameters
     model = DiffusionSegmentation(
@@ -348,6 +377,12 @@ def main():
     if args.debug_mode:
         run_debugging_checks(model, sample_data, device)
     
+    # Create degradation GIF if requested
+    if args.create_degradation_gif and args.diffusion_type == "morphological":
+        print("Creating morphological degradation GIF...")
+        gif_dir = output_dir / "degradation_gif"
+        create_training_flow_gif(model, sample_data, str(gif_dir))
+    
     # Training loop
     train_losses = []
     val_losses = []
@@ -364,15 +399,46 @@ def main():
             # Use synthetic data
             for batch_idx in tqdm(range(100), desc=f"Epoch {epoch+1}/{args.epochs}"):
                 image, mask = create_synthetic_data(args.batch_size, (args.image_size, args.image_size))
-                loss = train_step(model, image, mask, optimizer, device, 
-                                args.use_enhanced_loss, legacy_loss_fn)
+                
+                # Decide whether to visualize this batch
+                should_visualize = (args.visualize_training_flow and 
+                                  batch_idx % args.viz_freq == 0 and 
+                                  epoch % 5 == 0)  # Visualize every 5 epochs
+                
+                loss, batch_info = train_step(model, image, mask, optimizer, device, 
+                                            args.use_enhanced_loss, legacy_loss_fn,
+                                            visualize_batch=should_visualize,
+                                            save_dir=str(viz_dir) if viz_dir else None,
+                                            batch_idx=batch_idx, epoch=epoch)
                 epoch_losses.append(loss)
+                
+                # Additional training flow visualization
+                if should_visualize and viz_dir:
+                    # Create comprehensive training flow visualization
+                    flow_data = model.visualize_training_flow(image[:2], mask[:2], num_timesteps_to_show=6)
+                    flow_viz_path = viz_dir / f"training_flow_epoch_{epoch}_batch_{batch_idx}.png"
+                    visualize_training_flow(flow_data, str(flow_viz_path), batch_idx=0, max_timesteps=6)
         else:
             # Use real data
             for batch_idx, (image, mask) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}")):
-                loss = train_step(model, image, mask, optimizer, device, 
-                                args.use_enhanced_loss, legacy_loss_fn)
+                # Decide whether to visualize this batch
+                should_visualize = (args.visualize_training_flow and 
+                                  batch_idx % args.viz_freq == 0 and 
+                                  epoch % 5 == 0)  # Visualize every 5 epochs
+                
+                loss, batch_info = train_step(model, image, mask, optimizer, device, 
+                                            args.use_enhanced_loss, legacy_loss_fn,
+                                            visualize_batch=should_visualize,
+                                            save_dir=str(viz_dir) if viz_dir else None,
+                                            batch_idx=batch_idx, epoch=epoch)
                 epoch_losses.append(loss)
+                
+                # Additional training flow visualization  
+                if should_visualize and viz_dir:
+                    # Create comprehensive training flow visualization
+                    flow_data = model.visualize_training_flow(image[:2], mask[:2], num_timesteps_to_show=6)
+                    flow_viz_path = viz_dir / f"training_flow_epoch_{epoch}_batch_{batch_idx}.png"
+                    visualize_training_flow(flow_data, str(flow_viz_path), batch_idx=0, max_timesteps=6)
         
         avg_train_loss = sum(epoch_losses) / len(epoch_losses)
         train_losses.append(avg_train_loss)
@@ -440,6 +506,15 @@ def main():
                     title=f"Epoch {epoch+1} Results ({model.diffusion_type.title()} Diffusion)", 
                     save_path=str(save_path)
                 )
+                
+                # ENHANCED: Create training flow visualization for this sample
+                if args.visualize_training_flow and viz_dir:
+                    sample_flow_data = model.visualize_training_flow(
+                        sample_image.cpu()[:1], sample_mask[:1], num_timesteps_to_show=8
+                    )
+                    sample_flow_path = viz_dir / f"sample_flow_epoch_{epoch+1}.png"
+                    visualize_training_flow(sample_flow_data, str(sample_flow_path), 
+                                          batch_idx=0, max_timesteps=8)
     
     # Save final model
     final_model_path = output_dir / "final_model.pth"
